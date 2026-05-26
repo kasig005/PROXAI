@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 import re
 import os
 
@@ -55,7 +55,7 @@ Cleaning Pipeline: {pipeline_content}
             input_variables=["pipeline_content"]
         )
 
-        self.chat_chain = LLMChain(llm=self.chat, prompt=self.prompt, verbose=False)
+        self.chat_chain = self.prompt | self.chat | StrOutputParser()
 
     def file_to_text(self, file):
         try:
@@ -68,7 +68,7 @@ Cleaning Pipeline: {pipeline_content}
 
     def descript(self) -> str:
         response = self.chat_chain.invoke({"pipeline_content": self.pipeline_content})
-        extracted_text = re.search(r"```(.*?)```", response["text"], re.DOTALL)
+        extracted_text = re.search(r"```(.*?)```", response, re.DOTALL)
 
         if extracted_text:
             return extracted_text.group(1).replace("python\n", "").strip()

@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 import re
 import os
 
@@ -34,7 +34,7 @@ class LLM_activities_used_columns:
             input_variables=["df_before", "df_after", "code", "description"],
         )
 
-        self.chat_chain = LLMChain(llm=self.chat, prompt=self.prompt, verbose=False)
+        self.chat_chain = self.prompt | self.chat | StrOutputParser()
 
 
     def give_columns(self, df_before, df_after, code, description) -> str:
@@ -42,7 +42,7 @@ class LLM_activities_used_columns:
         response = self.chat_chain.invoke(
             {"df_before": df_before, "df_after": df_after, "code": code, "description": description})
         # Use regular expression to find text between triple quotes
-        extracted_text = re.search("```(.*?)```", response["text"], re.DOTALL)
+        extracted_text = re.search("```(.*?)```", response, re.DOTALL)
 
         if extracted_text:
             return extracted_text.group(1)

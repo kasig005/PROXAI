@@ -36,7 +36,7 @@ def run_pipeline(args, tracker=None) -> None:
     columns = ['workclass', 'education', 'marital-status', 'occupation', 'relationship', 'race', 'sex', 'native-country',
             'label']
     # Apply the strip operation to the specified columns
-    df[columns] = df[columns].applymap(str.strip)
+    df[columns] = df[columns].apply(lambda col: col.map(str.strip))
     # Replace '?' with 0 in the DataFrame
     df = df.replace('?', 0)
     tracker.analyze_changes(df)
@@ -86,7 +86,7 @@ def run_pipeline(args, tracker=None) -> None:
     # Create a LabelEncoder for the 'race' column
     race_trans = LabelEncoder()
     # Fit and transform the 'race' column using the LabelEncoder
-    df["race"] = race_trans.fit_transform(df["race"])
+    df["race"] = race_trans.fit_transform(df["race"].values.astype(str))
     tracker.analyze_changes(df)
 
     # Create a LabelEncoder for the 'native-country' column

@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 import re
 import os
 import textwrap  # necessario per rimuovere indentazioni errate
@@ -78,7 +78,7 @@ class LLM_formatter:
             input_variables=["pipeline_content", "question"],
         )
 
-        self.chat_chain = LLMChain(llm=self.chat, prompt=self.prompt, verbose=False)
+        self.chat_chain = self.prompt | self.chat | StrOutputParser()
 
     def file_to_text(self, file):
         # Leggi il contenuto del file e convertilo in testo
@@ -97,7 +97,7 @@ class LLM_formatter:
         )
 
         # Extract code block between triple backticks
-        extracted_text = re.search("```(.*?)```", response["text"], re.DOTALL)
+        extracted_text = re.search("```(.*?)```", response, re.DOTALL)
 
         if extracted_text:
             code_to_write = extracted_text.group(1)

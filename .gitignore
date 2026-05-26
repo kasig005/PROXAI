@@ -1,38 +1,33 @@
-*/__pycache__
+# Python
+__pycache__/
 *.pyc
-KEY.py
-/.idea/jupyter-settings.xml
-/test
-NaturalLanguageGraphExploitation/API_KEY.ipynb
-.influenciae_env/
-rag_system/faiss_indexes/*.pkl
-rag_system/faiss_indexes/*.idx
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
 venv/
-demo/
+env/
 
-# IDE settings
-.idea/
-.vscode/
-
-# Secrets
+# API Keys - NEVER commit this
+KEY.py
 .env
 
-# Datasets (tieni solo census.csv)
-datasets/*
-!datasets/census.csv
+# Neo4j data
+neo4j/data/
 
-# Modelli addestrati (tieni solo census)
-trained_models/*
-!trained_models/Census_correct_checkpoints
-!trained_models/Census_wrong_checkpoints
+# FAISS indexes (generated at runtime)
+faiss_indexes/
 
-# Immagini generate
-*.png
+# Trained models (large binary files)
+trained_models/
+
+# LLM-generated pipeline file
+extracted_code_llm.py
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
 
 # OS files
-Thumbs.db
-Desktop.ini
 .DS_Store
+Thumbs.db

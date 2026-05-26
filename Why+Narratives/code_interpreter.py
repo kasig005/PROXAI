@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 class ChatBot:
     def __init__(self, api_key: str, temperature: float = 0.2, model_name: str = "llama3-70b-8192"):
@@ -29,13 +29,13 @@ class ChatBot:
             Context: {context}
             Question: {question}
             """
-        return PromptTemplate(template=template)
+        return PromptTemplate(template=template, input_variables=["context", "question"])
     
 
     def ask_question(self, context: str, input, type, output="optional", element="column") -> str:
 
         prompt = self.generate_prompt(element)
-        self.chat_chain = LLMChain(llm=self.chat, prompt=prompt, verbose=False)
+        self.chat_chain = prompt | self.chat | StrOutputParser()
 
         if type=="WAS_INVALIDATED_BY":
             question = f"Why this code invalidate this {input}?"
@@ -45,7 +45,7 @@ class ChatBot:
             question = f"Why this code use this {input}?"
         
         response = self.chat_chain.invoke({"context": context, "question": question})
-        return response["text"]
+        return response
 
 
 

@@ -66,9 +66,9 @@ print(activities_description)
 cleaned = activities_description.replace("pipeline_operations = ", "")
 
 # Rimuove blocchi markdown (```python ... ```) o singola parola 'python'
-cleaned = re.sub(r"```python\\s*", "", cleaned, flags=re.IGNORECASE)
+cleaned = re.sub(r"```python\s*", "", cleaned, flags=re.IGNORECASE)
 cleaned = re.sub(r"```", "", cleaned)
-cleaned = re.sub(r"^python\\s*", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+cleaned = re.sub(r"^python\s*", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
 
 # Normalizza l'indentazione
 cleaned = textwrap.dedent(cleaned).strip()
@@ -84,7 +84,7 @@ activities_description_dict = ast.literal_eval(cleaned)
 # print(activities_description_dict)
 
 #Neo4j initialization
-neo4j = Neo4jFactory.create_neo4j_queries(uri="bolt://localhost", user="neo4j", pwd="adminadmin")
+neo4j = Neo4jFactory.create_neo4j_queries(uri="bolt://localhost:7687", user="neo4j", pwd="adminadmin")
 neo4j.delete_all()
 session = Neo4jConnector().create_session()
 tracker = ProvenanceTracker(save_on_neo4j=True)

@@ -1,11 +1,11 @@
-from multiprocessing import cpu_count
-from multiprocessing.dummy import Pool
 from typing import List, Optional
 
 from graph.constants import *
 from graph.decorators import Singleton
 from graph.logger import CustomLogger
 from neo4j import GraphDatabase, Session
+
+BATCH_SIZE = 500
 
 
 @Singleton
@@ -51,89 +51,54 @@ class Neo4jConnector:
 class Neo4jQueryExecutor:
     """
     Class that executes queries for Neo4j.
+    Single-threaded batched writes — thread-pool approach was silently swallowing
+    all exceptions in neo4j-python 5+/6+.
     """
 
     def __init__(self, connector) -> None:
         self.__connector = connector
         self.__logger = CustomLogger('ProvenanceTracker')
 
-    
-    def write_transaction(self, query: str) -> None:
-        
-        def transaction(tx) -> None:
-            tx.run(query)
-
-        with self.__connector.create_session(db=None) as session:
-            session.write_transaction(transaction)
-    
-    def write_transaction2(self, query: str, batch_size: int = 500):
-
-        def delete_batch(tx, query, batch_size):
-            result = tx.run(query, parameters={"batch_size": batch_size})
-            return len(list(result))
-
-        with self.__connector.create_session(db=None) as session:
-            while True:
-                result = session.write_transaction(delete_batch, query, batch_size)
-                print(result)
-                if result < batch_size:
-                    break
-
-
-
     def query(self, query: str, parameters: dict = None, db: str = None, session: Session = None) -> Optional[list]:
         """
-        Executes a query. If the provided session is None, it creates a new session internally to execute the query.
-
-        :param query: The query to execute.
-        :param parameters: Parameters for the query.
-        :param db: The database to connect to.
-        :param session: An externally created Neo4j session to use for executing the query.
-        :return: The query result as a list or None if an error occurred.
+        Executes a query. Uses an externally supplied session when provided,
+        otherwise opens and closes its own session.
         """
-
         if not self.__connector:
             raise ValueError('Connector not initialized!')
 
         response = None
-
-        external_session = False
-        if session:
-            external_session = True
+        external_session = session is not None
 
         try:
             if not external_session:
                 session = self.__connector.create_session(db=db)
-            response = session.run(query, parameters).data()
+            response = session.run(query, parameters or {}).data()
         except Exception as e:
-            self.__logger.error(f'Query failed: {e} {query}')
+            self.__logger.error(f'Query failed: {e}\n  query: {query}\n  params keys: {list((parameters or {}).keys())}')
+            print(f'[NEO4J ERROR] {e}\n  query snippet: {query[:120]}')
         finally:
-            # Close the session if it was internally created
-            if session is not None and not external_session:
+            if not external_session and session is not None:
                 session.close()
         return response
 
+    def insert_data_batched(self, query: str, rows: List[any], **kwargs) -> None:
+        """
+        Writes rows to Neo4j in sequential batches of BATCH_SIZE.
+        Opens a fresh session per batch so connection limits are respected.
+        kwargs are passed as extra Cypher parameters alongside the batch rows.
+        """
+        if not rows:
+            return
+
+        for start in range(0, len(rows), BATCH_SIZE):
+            batch = rows[start:start + BATCH_SIZE]
+            params = {'rows': batch, **kwargs}
+            self.query(query, parameters=params)
+
+    # Keep old name as alias so nothing else breaks
     def insert_data_multiprocess(self, query: str, rows: List[any], **kwargs) -> None:
-        """
-        Divides the data into batches. Each batch is assigned to a process that loads it into Neo4j.
-        The method completes when all workers have finished execution.
-
-        :param query: The query to execute.
-        :param rows: The rows to load.
-        :kwargs: Additional parameters to load.
-        """
-
-        pool = Pool(processes=(cpu_count() - 1))
-        batch_size = len(rows) // (cpu_count() - 1) if len(rows) >= cpu_count() - 1 else cpu_count()
-        batch = 0
-
-        while batch * batch_size < len(rows):
-            parameters = {'rows': rows[batch * batch_size:(batch + 1) * batch_size]}
-            pool.apply_async(self.query, args=(query,), kwds={'parameters': {**parameters, **kwargs}})
-            batch += 1
-
-        pool.close()
-        pool.join()
+        self.insert_data_batched(query, rows, **kwargs)
 
 
 class Neo4jQueries:
@@ -186,13 +151,10 @@ class Neo4jQueries:
 
         query = '''
                 MATCH (n)
-                CALL { WITH n
                 DETACH DELETE n
-                } IN TRANSACTIONS OF 1000 ROWS;
                 '''
 
         self.logger.debug(msg=query)
-        #self.__query_executor.write_transaction2(query)
         self.__query_executor.query(query, parameters=None, session=session)
 
     def add_activities(self, activities: List[any], session=None) -> None:
