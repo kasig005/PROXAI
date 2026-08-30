@@ -1,0 +1,22 @@
+diff --git a/codes/feature_extraction.py b/codes/feature_extraction.py
+index ab77cc8..8e02dc2 100755
+--- a/codes/feature_extraction.py
++++ b/codes/feature_extraction.py
+@@ -8,7 +8,7 @@ import numpy as np
+ from sklearn.decomposition import PCA
+ import re
+ from Bio.Seq import Seq
+-from Bio.Alphabet import IUPAC
++# from Bio.Alphabet import IUPAC  # removed in Biopython >=1.78; no longer needed
+ from math import log2
+ 
+ 
+@@ -206,7 +206,7 @@ def generateAminoAcidMapping(kmer3_map):
+ 
+     for codon in kmer3_map:
+         
+-        coding_dna = Seq(codon, IUPAC.unambiguous_dna)      
++        coding_dna = Seq(codon)  # modern Biopython: no alphabet argument      
+         aa = coding_dna.translate(to_stop=False)            # translate codon into amino acid
+         aa= str(aa)
+         
