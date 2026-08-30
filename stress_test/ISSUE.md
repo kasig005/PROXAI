@@ -99,6 +99,14 @@ Same pipeline file, run to run, yields 3–17 activities. For a comparison acros
 N configs this means the activity layer is present for some configs and absent
 for others, with no signal that anything went wrong.
 
+Reproduced on a second, unrelated pipeline: a scikit-learn
+clean→encode→scale→select→train pipeline on the Census dataset (`census_ml`
+stress-test profile). In one 4-config sweep, `baseline` and `clf_rf` succeeded
+while `encode_ordinal` and `select_k5` died with the exact
+`prolit_run.py:66 AttributeError: 'NoneType' object has no attribute 'replace'`.
+So this is not SSG-LUGIA-specific — any pipeline run through `prolit_run.py`
+inherits it.
+
 **Suggested fix:** validate `descript()` output (non-empty dict, every value a
 `(str, str)` tuple), raise on failure, and consider a deterministic /
 schema-constrained extraction (or a retry with a stricter prompt).
