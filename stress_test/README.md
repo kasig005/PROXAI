@@ -5,10 +5,14 @@ whether its provenance graph is not just captured but *diagnostically useful* �
 i.e. can it point at the pipeline stage responsible for a change in behaviour,
 automatically, instead of a human digging stage by stage.
 
-First pipeline under test: **SSG-LUGIA** (genomic-island prediction). It is
-deliberately unlike PROXAI's existing tabular demos — a multi-stage numpy signal
-pipeline with a known ground truth, because each test config changes exactly one
-stage.
+Pipelines under test (each a **profile** — `stress_test/<name>.py`):
+
+| Profile | Pipeline | Adapter | Stages |
+|---|---|---|---|
+| `ssg_lugia` (default) | SSG-LUGIA genomic-island prediction — multi-stage numpy, no pandas, known ground truth | `pipelines/ssg_lugia_pipeline.py` | feature extraction → anomaly detection → post-processing → islands |
+| `census_ml` | scikit-learn preprocessing + training on the Census/Adult income dataset | `pipelines/census_ml_pipeline.py` | clean/impute → encode → scale → select → train |
+
+Add more by writing a new profile + adapter (see "Adding another pipeline").
 
 ---
 
@@ -16,14 +20,13 @@ stage.
 
 | File | What it is |
 |---|---|
-| `configs.py` | The 11 SSG-LUGIA test configs. Each changes **one** knob vs. a baseline: classifier variant (F/R/P → anomaly-detection stage), window size/step (→ feature-extraction / scanning stage), feature representation (karlin / entropy / pca → feature-extraction stage). |
-| `run_stress_test.py` | Runs `prolit_run.py` once per config (config passed via the `SSG_LUGIA_CONFIG` env var), then snapshots each provenance graph to `results/<config>.json` before the next run wipes Neo4j. |
-| `compare.py` | Diffs every config's graph against the baseline: buckets activities into the 4 stages by their code, scores each stage's provenance divergence (0 = identical, 1 = fully changed), and writes a table to `results/_comparison.{json,md}`. |
-| `demo.py` | One command: checks Neo4j, runs a subset of configs, runs `compare.py`, prints key figures + use cases + the Neo4j queries to show the graph. |
-| `ISSUE.md` | The 5 PROXAI robustness bugs this stress test surfaced (paste into the issue tracker). |
+| `<profile>.py` (`ssg_lugia.py`, `census_ml.py`) | One profile per pipeline: the config list, which adapter to run, the env var + summary line, and the activity→stage mapping. |
+| `configs.py` | Back-compat shim (`from ssg_lugia import CONFIGS`). |
+| `run_stress_test.py` | `--profile <name>` — runs `prolit_run.py` once per config, clears the graph robustly first, snapshots each provenance graph to `results/<config>.json`. |
+| `compare.py` | `--profile <name>` — diffs every config's graph against the baseline: buckets activities into stages by code, scores each stage's provenance divergence (0 = identical, 1 = fully changed), writes `results/_comparison.{json,md}`. |
+| `demo.py` | `--profile <name>` — checks Neo4j, runs a config subset, runs `compare.py`, prints the table + use cases + Neo4j queries. |
+| `ISSUE.md` | The 5 PROXAI robustness bugs this stress test surfaced (upstream issue #2). |
 | `results/` | Generated output (git-ignored). |
-
-The pipeline adapter itself lives at `../pipelines/ssg_lugia_pipeline.py`.
 
 ---
 
@@ -55,8 +58,14 @@ python prolit_run.py `
 ### Full sweep + comparison
 
 ```powershell
+# SSG-LUGIA (default profile)
 python stress_test/run_stress_test.py --dataset external/SSG-LUGIA/codes/sample_data/NC_003198.1.fasta
 python stress_test/compare.py
+
+# census_ml profile
+python stress_test/run_stress_test.py --profile census_ml --dataset datasets/census.csv
+python stress_test/compare.py --profile census_ml
+
 # results/*.json, results/_summary.json, results/_comparison.md
 ```
 
@@ -76,40 +85,56 @@ python stress_test/demo.py --full     # all 11
 
 ## Adding another pipeline (the point of this harness)
 
-To stress-test PROXAI with a second system, you need **an adapter** and **a config
-list**. Mirror the SSG-LUGIA setup:
+Two files: an **adapter** and a **profile**. Use `pipelines/census_ml_pipeline.py`
++ `stress_test/census_ml.py` as the worked example.
 
-1. **Write `pipelines/<name>_pipeline.py`** exposing `run_pipeline(args, tracker)`.
-   Rules learned from SSG-LUGIA:
-   - `tracker.subscribe(df)` must happen **before the first stage you want
-     tracked**. Anything that runs before `subscribe()` is invisible to PROXAI.
-   - Make each stage **one clear DataFrame transformation** (add a column / change
-     a column) immediately followed by `tracker.analyze_changes(df)`. The LLM
-     activity extractor keys off the code between `analyze_changes` calls.
-   - If the target tool works on numpy / tensors, wrap each stage's output as a
-     DataFrame (one row per unit — window, record, token…) purely so the tracker
-     has something to diff.
-   - Read the per-run configuration from an env var (see `_load_config()` in
-     `ssg_lugia_pipeline.py`) so the same file can be run many times unchanged.
-   - Resolve any external-code paths independently of `__file__` — in
-     `--use_manual_code` mode the file is copied to `extracted_code.py` at the
-     repo root.
+### 1. `pipelines/<name>_pipeline.py` — exposes `run_pipeline(args, tracker)`
 
-2. **Write `stress_test/<name>_configs.py`** — a baseline plus one entry per
-   single-knob change, each mapping to a known stage.
+Rules learned from SSG-LUGIA:
+- `tracker.subscribe(df)` must happen **before the first stage you want tracked**.
+  Anything that runs before `subscribe()` is invisible to PROXAI (SSG-LUGIA v1
+  subscribed after feature extraction and could not see feature-representation
+  changes at all — see `ISSUE.md` #5).
+- Make each stage **one clear DataFrame transformation** (add/change a column)
+  immediately followed by `tracker.analyze_changes(df)`. The LLM activity
+  extractor keys off the code between `analyze_changes` calls, so keep the stage
+  count and shape stable.
+- If the target tool works on numpy / tensors, wrap each stage's output as
+  DataFrame columns on the one subscribed frame (one row per unit — window,
+  record, token…).
+- Read per-run config from an env var (`os.environ["<NAME>_CONFIG"]`, a JSON
+  object with an `overrides` key). Keep everything else deterministic
+  (`random_state`).
+- Resolve any external-code paths independently of `__file__` — in
+  `--use_manual_code` mode the file is copied to `extracted_code.py` at the repo
+  root.
+- End with one summary line: `[<name> pipeline] key=value key=value …` — the
+  numeric metrics the comparison will diff.
 
-3. **Point the driver at it** — `run_stress_test.py` currently imports
-   `configs.CONFIGS` and hard-codes `pipelines/ssg_lugia_pipeline.py`; generalise
-   those two (a `--pipeline` / `--configs-module` pair) when the second pipeline
-   lands.
+### 2. `stress_test/<name>.py` — the profile
 
-4. **Extend `compare.py`'s stage buckets** — `STAGE_CODE_KEYWORDS` maps code
-   substrings to stages; add the new pipeline's stage function names.
+Export:
+- `PIPELINE_FILE`, `CONFIG_ENV`, `SUMMARY_PREFIX`, `METRIC_KEYS` (which
+  `key=value`s from the summary line to keep), `BASELINE` (baseline config name).
+- `CONFIGS` — a baseline plus one entry per single-knob change:
+  `{"name": ..., "overrides": {...}}`.
+- `config_payload(cfg)` — the JSON object handed to the pipeline.
+- `STAGES` (ordered), `STAGE_CODE_KEYWORDS` (code substrings → stage),
+  `STAGE_LABEL`, optional `STAGE_NAME_KEYWORDS` (function_name fallback).
+- `expected_stage(cfg)` — which stage that config's knob targets.
+- `knob_label(cfg)` — one-line human description.
 
-Candidate second/third pipelines: any multi-stage preprocessing or ML pipeline
-with tunable per-stage parameters and a measurable output (a scikit-learn
-`Pipeline` with swappable steps, a different bioinformatics tool, an NLP
-preprocessing chain).
+### 3. Run it
+
+```powershell
+python stress_test/run_stress_test.py --profile <name> --dataset <path>
+python stress_test/compare.py         --profile <name>
+python stress_test/demo.py            --profile <name>   # add a DEFAULT_DATASET entry in demo.py
+```
+
+Candidate further pipelines: any multi-stage preprocessing/ML pipeline with
+tunable per-stage parameters and a measurable output (an NLP preprocessing chain,
+another bioinformatics tool, an image-preprocessing pipeline).
 
 ---
 
@@ -120,7 +145,12 @@ preprocessing chain).
   bare per-window frame *before* feature extraction, so every stage (feature
   extraction included) is a tracked column-add. v1 subscribed after feature
   extraction, which made the feature-representation configs invisible.
-- `stress_test/{configs,run_stress_test,compare,demo}.py` — as above.
+- `pipelines/census_ml_pipeline.py` — second adapter: scikit-learn
+  clean → encode → scale → select → train on `datasets/census.csv`, deterministic.
+- `stress_test/{ssg_lugia,census_ml}.py` — one profile per pipeline (config list +
+  adapter path + env var + summary line + activity→stage map). `configs.py` is a
+  back-compat shim. `run_stress_test.py` / `compare.py` / `demo.py` take
+  `--profile <name>`.
 - `.gitignore` — added `stress_test/results/`.
 - `external/SSG-LUGIA` — added as a submodule (pinned at `de7cb6b`). It needs a
   one-line Biopython ≥ 1.78 compat fix (`codes/feature_extraction.py`: drop the
@@ -194,7 +224,8 @@ multi-config, multi-pipeline sweep can be trusted.
 ## Next steps
 
 1. Land `ISSUE.md` fixes #1 and #4 in PROXAI core.
-2. Add pipeline #2 (see "Adding another pipeline") and generalise
-   `run_stress_test.py` to take `--pipeline` + `--configs-module`.
-3. Re-run the SSG-LUGIA sweep at granularity 3 once activity creation is
-   deterministic; then evaluate stage-attribution accuracy across both pipelines.
+2. ~~Add pipeline #2 + generalise the harness~~ — done (`census_ml` profile +
+   `--profile` on all three scripts).
+3. Add pipeline #3 (an NLP or image preprocessing chain) for a third data point.
+4. Re-run both sweeps at granularity 3 once activity creation is deterministic;
+   then evaluate stage-attribution accuracy across pipelines.

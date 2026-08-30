@@ -1,29 +1,32 @@
 """
-Stress-test driver for PROXAI x SSG-LUGIA.
+Stress-test driver for PROXAI.
 
-Runs prolit_run.py once per config in configs.py. Each config is passed to
-pipelines/ssg_lugia_pipeline.py through the SSG_LUGIA_CONFIG env var, so the same
-pipeline file runs 11 times with a different stage-by-stage setup each time.
+Runs prolit_run.py once per config in the selected profile (--profile, default
+`ssg_lugia`; see stress_test/<profile>.py). Each config is passed to the
+profile's adapter pipeline through its CONFIG_ENV env var, so the same pipeline
+file runs N times with a different stage-by-stage setup each time.
 
-Because prolit_run.py calls neo4j.delete_all() at the start of every run, this
-script snapshots each run's provenance graph to results/<config_name>.json
-(straight from the Neo4j driver -- no APOC / file-export config needed) right
-after that run finishes and before the next run's delete_all() wipes it.
+prolit_run.py calls its own (fragile) neo4j.delete_all() per run; this script
+clears the graph robustly first, then snapshots each run's provenance graph to
+results/<config_name>.json via the Neo4j driver (no APOC needed).
 
 Usage (from the PROXAI repo root, venv active, Neo4j running):
 
     python stress_test/run_stress_test.py \
         --dataset external/SSG-LUGIA/codes/sample_data/NC_003198.1.fasta
 
-    # just one or two configs while iterating:
+    python stress_test/run_stress_test.py --profile census_ml \
+        --dataset datasets/census.csv
+
+    # subset while iterating:
     python stress_test/run_stress_test.py --dataset ... --only baseline_F classifier_R
 
 Requires: KEY.py with a working Groq key (see README). Neo4j from
-neo4j/docker-compose.yml. Run stress_test/compare.py afterwards to build the
-baseline-vs-config comparison.
+neo4j/docker-compose.yml. Run stress_test/compare.py --profile <same> afterwards.
 """
 
 import argparse
+import importlib
 import json
 import os
 import shutil
@@ -33,7 +36,6 @@ import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from configs import CONFIGS
 
 try:
     from neo4j import GraphDatabase
@@ -41,25 +43,27 @@ except ImportError:
     GraphDatabase = None
 
 REPO_ROOT = Path(__file__).parent.parent
-PIPELINE_SRC = REPO_ROOT / "pipelines" / "ssg_lugia_pipeline.py"
 EXTRACTED = REPO_ROOT / "extracted_code.py"
 
-# Parses e.g.:
-# [SSG-LUGIA pipeline] model=SSG-LUGIA-F  overrides={}  windows=47991  islands_found=14
-_SUMMARY_RE = re.compile(
-    r"\[SSG-LUGIA pipeline\].*?windows=(?P<windows>\d+)\s+islands_found=(?P<islands>\d+)"
-)
+# tokens like  key=value  (value = anything but whitespace) on the summary line
+_KV_RE = re.compile(r"(\w+)=(\S+)")
 
 
-def parse_pipeline_summary(stdout: str):
-    """Pull windows / islands_found from the pipeline's own summary line."""
-    m = _SUMMARY_RE.search(stdout or "")
-    if not m:
-        return {"windows": None, "islands_found": None}
-    return {
-        "windows": int(m.group("windows")),
-        "islands_found": int(m.group("islands")),
-    }
+def _coerce(v: str):
+    for cast in (int, float):
+        try:
+            return cast(v)
+        except ValueError:
+            pass
+    return v
+
+
+def parse_pipeline_summary(stdout: str, prefix: str, keys):
+    """Extract `key=value` pairs from the pipeline's summary line (the line
+    starting with `prefix`). Returns {k: coerced value} for k in `keys`."""
+    line = next((ln for ln in (stdout or "").splitlines() if prefix in ln), "")
+    found = {k: _coerce(v) for k, v in _KV_RE.findall(line)}
+    return {k: found.get(k) for k in keys}
 
 
 def clear_graph(uri, user, pwd):
@@ -231,25 +235,29 @@ def snapshot_graph(uri, user, pwd):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", required=True, help="Path to the genome fasta file")
-    parser.add_argument("--pipeline", default="pipelines/ssg_lugia_pipeline.py")
+    parser.add_argument("--profile", default="ssg_lugia",
+                        help="stress_test/<profile>.py (default: ssg_lugia)")
+    parser.add_argument("--dataset", required=True, help="Path to the input dataset")
     parser.add_argument(
         "--granularity_level", type=int, default=1,
-        help="PROXAI granularity 1-4. Default 1 (Sketch). Level 3 (Full) produces "
-             "~750k nodes / ~2.5M rels PER run on this genome -- only use it for a "
-             "single run, not the 11-config sweep.",
+        help="PROXAI granularity 1-4. Default 1 (Sketch). Level 3 (Full) can "
+             "produce hundreds of thousands of nodes PER run -- use it for a "
+             "single run, not a full sweep.",
     )
     parser.add_argument("--only", nargs="+", metavar="CONFIG_NAME", default=None,
-                        help="Run only these config names (default: all 11).")
+                        help="Run only these config names (default: all in the profile).")
     parser.add_argument("--neo4j_uri", default="bolt://localhost:7687")
     parser.add_argument("--neo4j_user", default="neo4j")
     parser.add_argument("--neo4j_pwd", default="adminadmin")
     args = parser.parse_args()
 
-    configs = CONFIGS
+    profile = importlib.import_module(args.profile)
+    pipeline_src = REPO_ROOT / profile.PIPELINE_FILE
+
+    configs = profile.CONFIGS
     if args.only:
         wanted = set(args.only)
-        configs = [c for c in CONFIGS if c["name"] in wanted]
+        configs = [c for c in profile.CONFIGS if c["name"] in wanted]
         missing = wanted - {c["name"] for c in configs}
         if missing:
             parser.error(f"unknown config name(s): {sorted(missing)}")
@@ -258,24 +266,21 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     # prolit_run.py --use_manual_code executes the file named extracted_code.py,
-    # NOT --pipeline. Put our pipeline there. It reads its per-run config from the
-    # SSG_LUGIA_CONFIG env var, so copying once up front is enough.
-    shutil.copyfile(PIPELINE_SRC, EXTRACTED)
-    print(f"Copied {PIPELINE_SRC.name} -> {EXTRACTED.name}")
+    # NOT --pipeline. Put the profile's pipeline there. It reads its per-run
+    # config from the env var, so copying once up front is enough.
+    shutil.copyfile(pipeline_src, EXTRACTED)
+    print(f"profile={args.profile}  pipeline={profile.PIPELINE_FILE} -> {EXTRACTED.name}")
 
     summary = []
     for cfg in configs:
-        print(f"\n=== Running config: {cfg['name']} "
-              f"(model={cfg['model_name']}, overrides={cfg['overrides']}) ===")
+        print(f"\n=== Running config: {cfg['name']}  ({profile.knob_label(cfg)}) ===")
 
-        # prolit_run.py calls its own delete_all(), but that is fragile on a
-        # large graph -- clear it robustly here first.
+        # prolit_run.py's own delete_all() is fragile on a large graph -- clear
+        # it robustly here first.
         clear_graph(args.neo4j_uri, args.neo4j_user, args.neo4j_pwd)
 
         env = os.environ.copy()
-        env["SSG_LUGIA_CONFIG"] = json.dumps(
-            {"model_name": cfg["model_name"], "overrides": cfg["overrides"]}
-        )
+        env[profile.CONFIG_ENV] = json.dumps(profile.config_payload(cfg))
         # Windows console is cp1252; the LLM step prints non-ASCII -> force UTF-8.
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -284,7 +289,7 @@ def main():
             [
                 sys.executable, "prolit_run.py",
                 "--dataset", args.dataset,
-                "--pipeline", args.pipeline,
+                "--pipeline", profile.PIPELINE_FILE,
                 "--frac", "1.0",
                 "--granularity_level", str(args.granularity_level),
                 "--use_manual_code",
@@ -301,18 +306,18 @@ def main():
             print("--- STDERR (tail) ---")
             print(proc.stderr[-3000:])
 
-        pipe_summary = parse_pipeline_summary(proc.stdout)
+        metrics = parse_pipeline_summary(proc.stdout, profile.SUMMARY_PREFIX,
+                                         profile.METRIC_KEYS)
         out_path = results_dir / f"{cfg['name']}.json"
         record = {
-            "config": {
-                "name": cfg["name"],
-                "model_name": cfg["model_name"],
-                "overrides": cfg["overrides"],
-            },
+            "profile": args.profile,
+            "config": {"name": cfg["name"],
+                       "model_name": cfg.get("model_name"),
+                       "overrides": cfg.get("overrides", {})},
             "granularity_level": args.granularity_level,
             "success": ok,
             "returncode": proc.returncode,
-            "pipeline": pipe_summary,
+            "metrics": metrics,
         }
 
         if ok:
@@ -323,37 +328,27 @@ def main():
             except Exception as e:  # noqa: BLE001
                 record["snapshot_error"] = repr(e)
                 print(f"  [!] graph snapshot failed: {e!r}")
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(record, f, indent=2)
-            print(f"  -> {out_path.relative_to(REPO_ROOT)}  "
-                  f"(windows={pipe_summary['windows']}, "
-                  f"islands_found={pipe_summary['islands_found']})")
-        else:
-            # still write the record so compare.py / a human can see it failed
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(record, f, indent=2)
-            print(f"  [FAILED] see {out_path.relative_to(REPO_ROOT)}")
 
-        summary.append({
-            "name": cfg["name"],
-            "model_name": cfg["model_name"],
-            "overrides": cfg["overrides"],
-            "success": ok,
-            "windows": pipe_summary["windows"],
-            "islands_found": pipe_summary["islands_found"],
-            "result_file": str(out_path.relative_to(REPO_ROOT)) if ok else None,
-        })
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+        tag = f"  -> {out_path.relative_to(REPO_ROOT)}  {metrics}" if ok \
+            else f"  [FAILED] see {out_path.relative_to(REPO_ROOT)}"
+        print(tag)
+
+        summary.append({"name": cfg["name"],
+                        "overrides": cfg.get("overrides", {}),
+                        "success": ok, "metrics": metrics,
+                        "result_file": str(out_path.relative_to(REPO_ROOT)) if ok else None})
 
     with open(results_dir / "_summary.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+        json.dump({"profile": args.profile, "runs": summary}, f, indent=2)
 
     print("\n\n=== Stress test complete ===")
     for s in summary:
         status = "OK  " if s["success"] else "FAIL"
-        print(f"  [{status}] {s['name']:24s} "
-              f"windows={s['windows']} islands_found={s['islands_found']}")
+        print(f"  [{status}] {s['name']:24s} {s['metrics']}")
     print(f"\nResults in {results_dir.relative_to(REPO_ROOT)}/")
-    print("Next: python stress_test/compare.py")
+    print(f"Next: python stress_test/compare.py --profile {args.profile}")
 
 
 if __name__ == "__main__":
