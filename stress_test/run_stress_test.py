@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import re
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -66,26 +67,32 @@ def parse_pipeline_summary(stdout: str, prefix: str, keys):
     return {k: found.get(k) for k in keys}
 
 
-# Failure signatures known to be transient LLM non-determinism inside
-# prolit_run.py (PROXAI issue: descript() can return None / a malformed dict on
-# some calls). Re-running the same config usually gets a good LLM response.
+# Failure signatures worth a re-run: LLM non-determinism inside prolit_run.py
+# (descript() returns None / a malformed dict) and Groq free-tier rate limits
+# (8000 TPM -> 413/429 when calls bunch up).
 _TRANSIENT_SIGNATURES = (
     "'NoneType' object has no attribute 'replace'",   # descript() -> None
     "ast.literal_eval",                                # descript() -> unparseable
     "IndexError: list index out of range",             # activity/snapshot mismatch
     "malformed node or string",
+    "rate_limit_exceeded",                             # Groq TPM
+    "Error code: 413",
+    "Error code: 429",
 )
 
 
-def run_prolit(cmd, cwd, env, retries):
-    """Run prolit_run.py, retrying on known-transient LLM failures."""
+def run_prolit(cmd, cwd, env, retries, cooldown=45):
+    """Run prolit_run.py, retrying on known-transient failures. Waits `cooldown`
+    seconds before a retry so a Groq TPM window (60s) can clear."""
     for attempt in range(retries + 1):
         proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
         if proc.returncode == 0:
             return proc, attempt
         blob = (proc.stderr or "") + (proc.stdout or "")
         if attempt < retries and any(sig in blob for sig in _TRANSIENT_SIGNATURES):
-            print(f"  [retry {attempt + 1}/{retries}] transient LLM failure, re-running")
+            print(f"  [retry {attempt + 1}/{retries}] transient failure, "
+                  f"waiting {cooldown}s then re-running")
+            time.sleep(cooldown)
             continue
         return proc, attempt
     return proc, retries
@@ -273,7 +280,10 @@ def main():
                         help="Run only these config names (default: all in the profile).")
     parser.add_argument("--retries", type=int, default=2,
                         help="Re-run a config this many times on a known-transient "
-                             "LLM failure (PROXAI descript() non-determinism). Default 2.")
+                             "failure (descript() non-determinism, Groq TPM). Default 2.")
+    parser.add_argument("--pause", type=int, default=20,
+                        help="Seconds to wait between configs so LLM calls stay "
+                             "under the Groq free-tier 8000 TPM window. Default 20; 0 to disable.")
     parser.add_argument("--neo4j_uri", default="bolt://localhost:7687")
     parser.add_argument("--neo4j_user", default="neo4j")
     parser.add_argument("--neo4j_pwd", default="adminadmin")
@@ -300,8 +310,14 @@ def main():
     print(f"profile={args.profile}  pipeline={profile.PIPELINE_FILE} -> {EXTRACTED.name}")
 
     summary = []
-    for cfg in configs:
+    for i, cfg in enumerate(configs):
         print(f"\n=== Running config: {cfg['name']}  ({profile.knob_label(cfg)}) ===")
+
+        # Space out configs so per-run LLM calls don't blow the Groq free-tier
+        # 8000 TPM window (each descript() reserves up to max_tokens).
+        if i > 0 and args.pause:
+            print(f"  pausing {args.pause}s (rate-limit budget)")
+            time.sleep(args.pause)
 
         # prolit_run.py's own delete_all() is fragile on a large graph -- clear
         # it robustly here first.

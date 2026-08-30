@@ -1,4 +1,5 @@
-from langchain_groq import ChatGroq
+from langchain_groq import ChatGroq  # noqa: F401 (kept for --backend groq)
+from LLM.llm_client import make_chat
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import re
@@ -10,8 +11,7 @@ from LLM.llm_extract import extract_block
 class LLM_activities_used_columns:
 
     def __init__(self, api_key: str, temperature: float = 0, model_name: str = "openai/gpt-oss-120b"):
-        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name,
-                             max_tokens=8192)
+        self.chat = make_chat(api_key=api_key, temperature=temperature, max_tokens=256)
 
         # Template to identify used columns
         PIPELINE_STANDARDIZER_TEMPLATE = """

@@ -107,19 +107,26 @@ while `encode_ordinal` and `select_k5` died with the exact
 So this is not SSG-LUGIA-specific — any pipeline run through `prolit_run.py`
 inherits it.
 
-Two contributing causes, both now partly addressed on the stress-test branch:
+Causes found and addressed on the stress-test branch:
 
-- **Truncation.** `LLM_*` create `ChatGroq(...)` with **no `max_tokens`**, so a
-  large `descript()` response is cut mid-dict → invalid literal. Fixed by setting
-  `max_tokens=8192` on all three `ChatGroq` constructors.
 - **No-fence output.** `descript()` / `give_columns()` did
   `re.search(r"```(.*?)```", response)` and returned `None` when the model didn't
-  fence its answer. Replaced with a tolerant `LLM/llm_extract.extract_block()`
-  (fenced → outermost `{…}` / `[…]` → raw text, never `None`), so the caller's
-  `ast.literal_eval` / `eval` gets a string and raises a *clear* error if it is
-  genuinely unparseable.
-- `run_stress_test.py` gained `--retries` (default 2) to re-run a config on a
-  known-transient LLM failure.
+  fence its answer (openai/gpt-oss-120b often doesn't). Replaced with a tolerant
+  `LLM/llm_extract.extract_block()` (fenced → outermost `{…}` / `[…]` → raw text,
+  never `None`).
+- **Truncation.** `ChatGroq(...)` had **no `max_tokens`**, so a large
+  `descript()` response was cut mid-dict → invalid literal. Now bounded.
+- **Groq free-tier rate limits.** `openai/gpt-oss-120b` on the `on_demand` tier
+  caps at **8000 tokens/minute** and **200000 tokens/day**. A single
+  `prompt + max_tokens` over 8000 → HTTP 413; a multi-config sweep exhausts the
+  daily budget → HTTP 429 for the rest of the day. `max_tokens` tuning cannot fix
+  a spent daily cap.
+
+**Resolution on this branch:** `LLM/llm_client.py` — the three `LLM_*` helpers
+now build their chat model via `make_chat()`, backend selected by
+`PROXAI_LLM_BACKEND` (**default `ollama`**, local `qwen2.5:7b`, no rate limits;
+`groq` still available). `run_stress_test.py` also gained `--retries` /
+`--pause` for the Groq path.
 
 **Still worth doing in core:** validate `descript()` output against a schema
 (non-empty dict, every value a `(str, str)` tuple) and raise on failure rather
