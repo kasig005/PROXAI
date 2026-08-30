@@ -66,6 +66,31 @@ def parse_pipeline_summary(stdout: str, prefix: str, keys):
     return {k: found.get(k) for k in keys}
 
 
+# Failure signatures known to be transient LLM non-determinism inside
+# prolit_run.py (PROXAI issue: descript() can return None / a malformed dict on
+# some calls). Re-running the same config usually gets a good LLM response.
+_TRANSIENT_SIGNATURES = (
+    "'NoneType' object has no attribute 'replace'",   # descript() -> None
+    "ast.literal_eval",                                # descript() -> unparseable
+    "IndexError: list index out of range",             # activity/snapshot mismatch
+    "malformed node or string",
+)
+
+
+def run_prolit(cmd, cwd, env, retries):
+    """Run prolit_run.py, retrying on known-transient LLM failures."""
+    for attempt in range(retries + 1):
+        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+        if proc.returncode == 0:
+            return proc, attempt
+        blob = (proc.stderr or "") + (proc.stdout or "")
+        if attempt < retries and any(sig in blob for sig in _TRANSIENT_SIGNATURES):
+            print(f"  [retry {attempt + 1}/{retries}] transient LLM failure, re-running")
+            continue
+        return proc, attempt
+    return proc, retries
+
+
 def clear_graph(uri, user, pwd):
     """
     Empty the graph in bounded batches.
@@ -246,6 +271,9 @@ def main():
     )
     parser.add_argument("--only", nargs="+", metavar="CONFIG_NAME", default=None,
                         help="Run only these config names (default: all in the profile).")
+    parser.add_argument("--retries", type=int, default=2,
+                        help="Re-run a config this many times on a known-transient "
+                             "LLM failure (PROXAI descript() non-determinism). Default 2.")
     parser.add_argument("--neo4j_uri", default="bolt://localhost:7687")
     parser.add_argument("--neo4j_user", default="neo4j")
     parser.add_argument("--neo4j_pwd", default="adminadmin")
@@ -285,7 +313,7 @@ def main():
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
 
-        proc = subprocess.run(
+        proc, attempts = run_prolit(
             [
                 sys.executable, "prolit_run.py",
                 "--dataset", args.dataset,
@@ -294,10 +322,7 @@ def main():
                 "--granularity_level", str(args.granularity_level),
                 "--use_manual_code",
             ],
-            cwd=REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
+            cwd=REPO_ROOT, env=env, retries=args.retries,
         )
 
         ok = proc.returncode == 0
@@ -317,6 +342,7 @@ def main():
             "granularity_level": args.granularity_level,
             "success": ok,
             "returncode": proc.returncode,
+            "attempts": attempts + 1,
             "metrics": metrics,
         }
 

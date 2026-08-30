@@ -4,11 +4,14 @@ from langchain_core.output_parsers import StrOutputParser
 import re
 import os
 
+from LLM.llm_extract import extract_block
+
 
 class LLM_activities_used_columns:
 
     def __init__(self, api_key: str, temperature: float = 0, model_name: str = "openai/gpt-oss-120b"):
-        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name)
+        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name,
+                             max_tokens=8192)
 
         # Template to identify used columns
         PIPELINE_STANDARDIZER_TEMPLATE = """
@@ -41,9 +44,7 @@ class LLM_activities_used_columns:
 
         response = self.chat_chain.invoke(
             {"df_before": df_before, "df_after": df_after, "code": code, "description": description})
-        # Use regular expression to find text between triple quotes
-        extracted_text = re.search("```(.*?)```", response, re.DOTALL)
-
-        if extracted_text:
-            return extracted_text.group(1)
+        # Tolerant: fenced block, else the outermost [...], else raw text.
+        # (Previously returned None when unfenced -> eval(None) in the caller.)
+        return extract_block(response, "[", "]")
 

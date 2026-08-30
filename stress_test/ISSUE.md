@@ -107,9 +107,25 @@ while `encode_ordinal` and `select_k5` died with the exact
 So this is not SSG-LUGIA-specific — any pipeline run through `prolit_run.py`
 inherits it.
 
-**Suggested fix:** validate `descript()` output (non-empty dict, every value a
-`(str, str)` tuple), raise on failure, and consider a deterministic /
-schema-constrained extraction (or a retry with a stricter prompt).
+Two contributing causes, both now partly addressed on the stress-test branch:
+
+- **Truncation.** `LLM_*` create `ChatGroq(...)` with **no `max_tokens`**, so a
+  large `descript()` response is cut mid-dict → invalid literal. Fixed by setting
+  `max_tokens=8192` on all three `ChatGroq` constructors.
+- **No-fence output.** `descript()` / `give_columns()` did
+  `re.search(r"```(.*?)```", response)` and returned `None` when the model didn't
+  fence its answer. Replaced with a tolerant `LLM/llm_extract.extract_block()`
+  (fenced → outermost `{…}` / `[…]` → raw text, never `None`), so the caller's
+  `ast.literal_eval` / `eval` gets a string and raises a *clear* error if it is
+  genuinely unparseable.
+- `run_stress_test.py` gained `--retries` (default 2) to re-run a config on a
+  known-transient LLM failure.
+
+**Still worth doing in core:** validate `descript()` output against a schema
+(non-empty dict, every value a `(str, str)` tuple) and raise on failure rather
+than letting a malformed dict reach `add_activities()` where it is swallowed
+(item 1). A schema-constrained / function-calling extraction would remove the
+non-determinism entirely.
 
 ## 5. A stage is only observable if it runs *after* `tracker.subscribe()`
 

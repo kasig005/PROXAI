@@ -9,7 +9,8 @@ import textwrap  # necessario per rimuovere indentazioni errate
 class LLM_formatter:
 
     def __init__(self, file_pipeline, api_key: str, temperature: float = 0, model_name: str = "openai/gpt-oss-120b"):
-        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name)
+        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name,
+                             max_tokens=8192)
 
         # cleaning pipeline in text format
         self.pipeline_content = self.file_to_text(file_pipeline)

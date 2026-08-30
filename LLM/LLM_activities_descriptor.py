@@ -4,11 +4,14 @@ from langchain_core.output_parsers import StrOutputParser
 import re
 import os
 
+from LLM.llm_extract import extract_block
+
 
 class LLM_activities_descriptor:
 
     def __init__(self, file_pipeline, api_key: str, temperature: float = 0, model_name: str = "openai/gpt-oss-120b"):
-        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name)
+        self.chat = ChatGroq(temperature=temperature, groq_api_key=api_key, model_name=model_name,
+                             max_tokens=8192)
 
         # cleaning pipeline in text format
         self.pipeline_content = self.file_to_text(file_pipeline)
@@ -68,7 +71,7 @@ Cleaning Pipeline: {pipeline_content}
 
     def descript(self) -> str:
         response = self.chat_chain.invoke({"pipeline_content": self.pipeline_content})
-        extracted_text = re.search(r"```(.*?)```", response, re.DOTALL)
-
-        if extracted_text:
-            return extracted_text.group(1).replace("python\n", "").strip()
+        # Tolerant: fenced block, else the outermost {...}, else the raw text.
+        # (Previously returned None when the model didn't fence its answer, which
+        #  crashed prolit_run.py -- some models rarely fence a bare dict.)
+        return extract_block(response, "{", "}").replace("python\n", "").strip()
