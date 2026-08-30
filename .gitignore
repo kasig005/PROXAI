@@ -31,3 +31,6 @@ extracted_code_llm.py
 # OS files
 .DS_Store
 Thumbs.db
+
+# Stress test outputs
+stress_test/results/

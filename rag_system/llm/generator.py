@@ -1,5 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
 #from langchain.memory import ChatMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -7,11 +7,11 @@ from rag_system.config import settings
 
 
 # Initialize the LLM once
-llm = ChatGroq(
+llm = ChatOllama(
     temperature=0,
-    groq_api_key=settings.GROQ_API_KEY,
-    model_name=settings.LLM_MODEL_NAME,
-    max_tokens=settings.GEN_MAX_TOKENS
+    base_url=settings.OLLAMA_BASE_URL,
+    model=settings.LLM_MODEL_NAME,
+    num_predict=settings.GEN_MAX_TOKENS,
 )
 
 # Define the Prompt

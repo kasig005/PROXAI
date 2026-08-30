@@ -1,0 +1,3 @@
+[submodule "external/SSG-LUGIA"]
+	path = external/SSG-LUGIA
+	url = https://github.com/nibtehaz/SSG-LUGIA.git
