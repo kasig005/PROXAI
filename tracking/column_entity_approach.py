@@ -40,7 +40,15 @@ def column_entitiy_vision(changes, current_activities, args, activity_to_zoom):
         generated_columns = []
         used_columns = []
         invalidated_columns = []
-        if act == 0: 
+        if act == 0:
+            continue
+        # The LLM activity extraction (descript()) is non-deterministic and may
+        # return fewer activities than there are tracker.analyze_changes()
+        # snapshots. Without this guard the positional index below throws
+        # IndexError and the whole run is lost.
+        if act - 1 >= len(current_activities):
+            print(f"[column_entitiy_vision] no activity for snapshot {act} "
+                  f"(have {len(current_activities)} activities) -- skipping")
             continue
         activity = current_activities[act-1]
         df1 = changes[act]['before']
