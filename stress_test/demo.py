@@ -20,6 +20,7 @@ Needs KEY.py with a working Groq key (see README).
 import argparse
 import importlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,13 +76,18 @@ def hr(title=""):
     return f"\n{line}\n{title}\n{line}" if title else f"\n{line}"
 
 
+# Local Docker Neo4j (neo4j/docker-compose.yml). Not a secret -- override via env.
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_AUTH = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASS", "adminadmin"))
+
+
 def check_neo4j():
     try:
         from neo4j import GraphDatabase
     except ImportError:
         sys.exit("neo4j driver not installed -- pip install -r requirements.txt")
     try:
-        d = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "adminadmin"))
+        d = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
         d.verify_connectivity()
         d.close()
     except Exception as e:  # noqa: BLE001
